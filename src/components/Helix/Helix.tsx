@@ -4,6 +4,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { sortNodes } from '../Sort/Sort';
 import type { HelixOptions, HelixStyle } from '../../config/helixConfig';
 import {
+  createField,
+  moteBrightness,
+  stepField,
+  tryFireSpark,
+  type ParticleField,
+} from './helixParticles';
+import HelixControls from './HelixControls';
+import {
   clamp,
   place,
   project,
@@ -33,6 +41,8 @@ interface Palette {
   bead: string;
   /** Strength of the bloom pass. */
   glow: number;
+  /** Neon ramp for the orbiting field. */
+  neon: string[];
 }
 
 const PALETTES: Record<HelixStyle, Palette> = {
@@ -43,6 +53,7 @@ const PALETTES: Record<HelixStyle, Palette> = {
     far: '#12547f',
     bead: '#ccf6ff',
     glow: 0.9,
+    neon: ['#2ad4ff', '#7ef7ff', '#4d7bff', '#b06bff', '#8affd8'],
   },
   chroma: {
     core: '#ffeaff',
@@ -51,6 +62,7 @@ const PALETTES: Record<HelixStyle, Palette> = {
     far: '#3a2a86',
     bead: '#e6d2ff',
     glow: 1,
+    neon: ['#ff5fd0', '#9a6bff', '#5fd8ff', '#ff8a4c', '#e6d2ff'],
   },
   clinical: {
     core: '#ffffff',
@@ -59,6 +71,7 @@ const PALETTES: Record<HelixStyle, Palette> = {
     far: '#26404f',
     bead: '#eaf6fb',
     glow: 0.6,
+    neon: ['#dceaf2', '#9fc4d6', '#ffffff', '#b9d4e2', '#7fa6bb'],
   },
 };
 
@@ -67,6 +80,13 @@ const PAIRS = ['A·T', 'G·C', 'C·G', 'T·A', 'A·T', 'G·C', 'T·A', 'C·G'];
 
 const PERSPECTIVE = 1400;
 const DEPTH = 300;
+
+/**
+ * Pointer movement, in pixels, above which a press counts as a drag rather
+ * than a click. Below it the press must behave like an ordinary click so the
+ * link underneath opens.
+ */
+const DRAG_SLOP = 6;
 
 interface Segment {
   x0: number;
@@ -155,6 +175,7 @@ function Helix({ options, children }: HelixProps) {
   const glowRef = useRef<HTMLCanvasElement>(null);
   const frontRef = useRef<HTMLCanvasElement>(null);
   const readoutRef = useRef<HTMLSpanElement>(null);
+  const liveRef = useRef<HelixOptions>(options);
 
   const [ready, setReady] = useState(false);
 
@@ -175,8 +196,18 @@ function Helix({ options, children }: HelixProps) {
     const front = frontC.getContext('2d');
     if (!bg || !back || !glow || !front) return;
 
-    const palette = PALETTES[options.style];
-    const twist = twistPerStep(options.turns, count);
+    // Live options, mutated by the control panel without tearing the scene
+    // down and rebuilding it on every slider tick.
+    const live: HelixOptions = { ...options };
+    liveRef.current = live;
+    let palette = PALETTES[live.style];
+    let appliedStyle = live.style;
+    let field: ParticleField = createField(live.particles, {
+      band: 700,
+      reach: 8,
+    });
+    let fieldDensity = live.particles;
+    let twist = twistPerStep(live.turns, count);
     const reduced = window.matchMedia(
       '(prefers-reduced-motion: reduce)',
     ).matches;
@@ -205,8 +236,17 @@ function Helix({ options, children }: HelixProps) {
       depth: DEPTH,
       perspective: PERSPECTIVE,
     };
-    const motes: { x: number; y: number; r: number; s: number; a: number }[] =
+    const dust: { x: number; y: number; r: number; s: number; a: number }[] =
       [];
+
+    // Fit the helix to the viewport so phones get a narrower, tighter strand.
+    function applyFit() {
+      view.radius = Math.min(live.radius, (width - 46) / 2);
+      view.rise = live.rise * clamp(height / 880, 0.6, 1.15);
+      view.fade = Math.max(360, height * 0.56);
+      uMax = Math.min(count / 2 - 0.25, view.fade / view.rise + 1.7);
+      twist = twistPerStep(live.turns, count);
+    }
 
     function resize() {
       const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -222,11 +262,7 @@ function Helix({ options, children }: HelixProps) {
         ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
       }
 
-      // Fit the helix to the viewport so phones get a narrower, tighter strand.
-      view.radius = Math.min(options.radius, (width - 46) / 2);
-      view.rise = options.rise * clamp(height / 880, 0.6, 1.15);
-      view.fade = Math.max(360, height * 0.56);
-      uMax = Math.min(count / 2 - 0.25, view.fade / view.rise + 1.7);
+      applyFit();
 
       const tablet = clamp(view.radius * 2 - 74, 148, 268);
       stage!.style.setProperty('--hx-tablet', `${tablet}px`);
@@ -235,9 +271,9 @@ function Helix({ options, children }: HelixProps) {
         `${clamp(tablet / 16.2, 13, 17).toFixed(1)}px`,
       );
 
-      motes.length = 0;
+      dust.length = 0;
       for (let i = 0; i < 46; i += 1) {
-        motes.push({
+        dust.push({
           x: Math.random() * width,
           y: Math.random() * height,
           r: Math.random() * 1.7 + 0.3,
@@ -372,6 +408,147 @@ function Helix({ options, children }: HelixProps) {
       ctx.globalAlpha = 1;
     }
 
+    interface ScreenMote {
+      px: number;
+      py: number;
+      z: number;
+      scale: number;
+      size: number;
+      alpha: number;
+      tint: number;
+      visible: boolean;
+    }
+
+    /** Project every orbiting mote into screen space. */
+    function projectMotes(): ScreenMote[] {
+      return field.motes.map(m => {
+        const r = m.orbit * view.radius;
+        const x = r * Math.cos(m.angle);
+        // Same depth convention as the backbone.
+        const z = -r * Math.sin(m.angle);
+        const p = project(x, m.y, z, cx, cy, view.perspective);
+        const t = Math.min(1, Math.abs(m.y) / (view.fade * 1.25));
+        const fade = 1 - t * t;
+        const depth = clamp(0.5 + z / (view.radius * 2.6), 0, 1);
+        return {
+          px: p.px,
+          py: p.py,
+          z,
+          scale: p.scale,
+          size: m.size * p.scale * (0.6 + depth * 1.1),
+          alpha: fade * moteBrightness(m) * (0.3 + depth * 0.7),
+          tint: m.tint,
+          visible: fade > 0.15 && depth > 0.3,
+        };
+      });
+    }
+
+    function drawMotes(
+      ctx: CanvasRenderingContext2D,
+      screen: ScreenMote[],
+      front: boolean,
+    ) {
+      for (const m of screen) {
+        if (m.alpha <= 0.01) continue;
+        if (front ? m.z <= 0 : m.z > 0) continue;
+        const colour = palette.neon[m.tint % palette.neon.length];
+        const r = Math.max(0.7, m.size);
+        // A soft halo...
+        const g = ctx.createRadialGradient(m.px, m.py, 0, m.px, m.py, r * 5);
+        g.addColorStop(0, colour);
+        g.addColorStop(0.22, colour);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.globalAlpha = m.alpha * 0.85;
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(m.px, m.py, r * 5, 0, Math.PI * 2);
+        ctx.fill();
+        // ...around a hot core, which is what makes it read as a point of
+        // light rather than a smudge.
+        ctx.globalAlpha = Math.min(1, m.alpha * 1.5);
+        ctx.fillStyle = colour;
+        ctx.beginPath();
+        ctx.arc(m.px, m.py, r * 0.85, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    /** Signals running along a backbone, head bright, short tail behind. */
+    function drawPulses(ctx: CanvasRenderingContext2D) {
+      for (const p of field.pulses) {
+        const colour = palette.neon[p.tint % palette.neon.length];
+        for (let tail = 0; tail < 7; tail += 1) {
+          const d = p.d - Math.sign(p.speed) * tail * 0.16;
+          if (Math.abs(d) > uMax) continue;
+          const point = strandPoint(d, p.strand, twist, view);
+          const proj = project(
+            point.x,
+            point.y,
+            point.z,
+            cx,
+            cy,
+            view.perspective,
+          );
+          const head = 1 - tail / 7;
+          const alpha =
+            p.life *
+            head *
+            head *
+            place(d, twist, view).fade *
+            (0.25 + point.near * 0.75);
+          if (alpha <= 0.01) continue;
+          const r = (1.6 + 4.6 * head) * proj.scale;
+          const g = ctx.createRadialGradient(
+            proj.px,
+            proj.py,
+            0,
+            proj.px,
+            proj.py,
+            r * 3,
+          );
+          g.addColorStop(0, '#ffffff');
+          g.addColorStop(0.3, colour);
+          g.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(proj.px, proj.py, r * 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    /** Synapse filaments between motes that drifted close together. */
+    function drawSparks(ctx: CanvasRenderingContext2D, screen: ScreenMote[]) {
+      for (const spark of field.sparks) {
+        const a = screen[spark.from];
+        const b = screen[spark.to];
+        if (!a || !b) continue;
+        const colour = palette.neon[spark.tint % palette.neon.length];
+        // Ease so the filament snaps in and decays away.
+        const intensity = Math.sin(Math.min(1, spark.life) * Math.PI);
+        const midX = (a.px + b.px) / 2 + (a.py - b.py) * 0.14;
+        const midY = (a.py + b.py) / 2 + (b.px - a.px) * 0.14;
+
+        ctx.globalAlpha = intensity * 0.5;
+        ctx.strokeStyle = colour;
+        ctx.lineWidth = 2.4;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(a.px, a.py);
+        ctx.quadraticCurveTo(midX, midY, b.px, b.py);
+        ctx.stroke();
+
+        ctx.globalAlpha = intensity * 0.95;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 0.9;
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
     function drawBackground(pos: number, dt: number) {
       bg!.clearRect(0, 0, width, height);
       const ghosts = [
@@ -425,7 +602,7 @@ function Helix({ options, children }: HelixProps) {
         }
       }
       bg!.globalAlpha = 1;
-      for (const m of motes) {
+      for (const m of dust) {
         m.y -= m.s * dt * 40;
         if (m.y < -8) {
           m.y = height + 8;
@@ -447,6 +624,8 @@ function Helix({ options, children }: HelixProps) {
     let dragging = false;
     let lastY = 0;
     let dragged = 0;
+    let captured = false;
+    let pointerId: number | null = null;
     let lastIndex = -1;
     let last = performance.now();
     let raf = 0;
@@ -454,14 +633,31 @@ function Helix({ options, children }: HelixProps) {
     function frame(now: number) {
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
+      const previous = pos;
 
-      if (options.drift && !pointerInside && !dragging && !reduced) {
+      // Pick up anything the control panel changed since the last frame.
+      if (live.style !== appliedStyle) {
+        stage!.classList.remove(`hx--${appliedStyle}`);
+        stage!.classList.add(`hx--${live.style}`);
+        appliedStyle = live.style;
+        palette = PALETTES[live.style];
+      }
+      if (live.particles !== fieldDensity) {
+        fieldDensity = live.particles;
+        field = createField(live.particles, {
+          band: view.fade * 1.3,
+          reach: uMax,
+        });
+      }
+      applyFit();
+
+      if (live.drift && !pointerInside && !dragging && !reduced) {
         pos += 0.135 * dt;
       }
       pos += velocity;
       velocity *= 0.915;
       if (
-        (!options.drift || pointerInside) &&
+        (!live.drift || pointerInside) &&
         !dragging &&
         Math.abs(velocity) < 0.0035
       ) {
@@ -493,9 +689,20 @@ function Helix({ options, children }: HelixProps) {
           Math.abs(cos) > 0.34 && p.fade > 0.45 ? 'auto' : 'none';
       }
 
+      const bounds = { band: view.fade * 1.3, reach: uMax };
+      stepField(field, reduced ? 0 : dt, pos - previous, view.rise, bounds);
+      const screenMotes = projectMotes();
+      if (!reduced) {
+        tryFireSpark(field, screenMotes, Math.min(180, view.radius * 0.9));
+      }
+
       const segments = buildSegments();
       const beads = buildBeads(pos);
+
       back!.clearRect(0, 0, width, height);
+      // Motes behind the axis go under the strand, motes in front go over it.
+      // That interleaving is what reads as depth.
+      drawMotes(back!, screenMotes, false);
       drawStrand(back!, segments, beads, 1);
       glow!.clearRect(0, 0, width, height);
       glow!.globalAlpha = palette.glow;
@@ -508,6 +715,9 @@ function Helix({ options, children }: HelixProps) {
         beads.filter(b => b.z > view.radius * 0.18),
         0.62,
       );
+      drawMotes(front!, screenMotes, true);
+      drawPulses(front!);
+      drawSparks(front!, screenMotes);
       drawBackground(pos, dt);
 
       const index = ((Math.round(pos) % count) + count) % count;
@@ -533,29 +743,53 @@ function Helix({ options, children }: HelixProps) {
     };
     const onLeave = () => {
       pointerInside = false;
-      dragging = false;
+      if (!captured) dragging = false;
     };
     const onDown = (e: PointerEvent) => {
       if ((e.target as HTMLElement).closest('[data-helix-overlay]')) return;
       dragging = true;
       dragged = 0;
       lastY = e.clientY;
-      stage!.setPointerCapture(e.pointerId);
+      pointerId = e.pointerId;
+      // Deliberately no setPointerCapture here. Capturing on pointerdown
+      // retargets the click that follows to the capturing element, which
+      // means a plain click on a link never reaches the anchor and no link
+      // on the page works. Capture is taken below, only once the pointer has
+      // moved far enough to be a drag rather than a click.
     };
     const onMove = (e: PointerEvent) => {
       if (!dragging) return;
       const dy = e.clientY - lastY;
       lastY = e.clientY;
       dragged += Math.abs(dy);
+      if (!captured && dragged > DRAG_SLOP) {
+        try {
+          stage!.setPointerCapture(e.pointerId);
+          captured = true;
+        } catch {
+          // Capture is a nicety for drags that leave the element; if the
+          // browser refuses it the drag still tracks while the pointer is over
+          // the stage.
+        }
+      }
       pos -= dy / view.rise;
       velocity = (-dy / view.rise) * 0.35;
     };
     const onUp = () => {
+      if (captured && pointerId !== null) {
+        try {
+          stage!.releasePointerCapture(pointerId);
+        } catch {
+          // Already released.
+        }
+      }
+      captured = false;
+      pointerId = null;
       dragging = false;
     };
     // Suppress the click that ends a drag, so a fling never opens a link.
     const onClick = (e: MouseEvent) => {
-      if (dragged > 7) {
+      if (dragged > DRAG_SLOP) {
         e.preventDefault();
         e.stopPropagation();
         dragged = 0;
@@ -665,6 +899,13 @@ function Helix({ options, children }: HelixProps) {
         <span className="hx-hud__tick" />
         <span className="hx-hud__end">3′ → 5′</span>
       </aside>
+
+      {options.controls && (
+        <HelixControls
+          initial={options}
+          onChange={patch => Object.assign(liveRef.current, patch)}
+        />
+      )}
 
       <p className="hx-hint">
         <span className="hx-hint__wheel" aria-hidden="true" />

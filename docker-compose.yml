@@ -67,7 +67,9 @@ services:
       - GOOGLE_PODCASTS=https://podcasts.google.com/feed/XYZ
       - GOOGLEMAPS=https://www.google.com/maps
       - GOOGLESCHOLAR=https://scholar.google.co.uk/
+      - HELIX_CONTROLS=false
       - HELIX_DRIFT=true
+      - HELIX_PARTICLES=subtle
       - HELIX_RADIUS=172
       - HELIX_RISE=90
       - HELIX_STYLE=bio

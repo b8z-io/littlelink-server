@@ -9,6 +9,7 @@
 import type { RuntimeConfig } from './runtimeConfig';
 
 export type HelixStyle = 'bio' | 'chroma' | 'clinical';
+export type ParticleDensity = 'off' | 'subtle' | 'rich';
 
 export interface HelixOptions {
   /** Visual treatment applied to the strands and the link tablets. */
@@ -28,6 +29,10 @@ export interface HelixOptions {
   rise: number;
   /** Whether the strand turns slowly on its own while the pointer is away. */
   drift: boolean;
+  /** How much orbital life surrounds the strand. */
+  particles: ParticleDensity;
+  /** Whether visitors get a control panel behind a gear button. */
+  controls: boolean;
 }
 
 export interface BioContent {
@@ -38,6 +43,7 @@ export interface BioContent {
 }
 
 const STYLES: readonly HelixStyle[] = ['bio', 'chroma', 'clinical'];
+const DENSITIES: readonly ParticleDensity[] = ['off', 'subtle', 'rich'];
 
 const DEFAULTS: HelixOptions = {
   style: 'bio',
@@ -45,6 +51,8 @@ const DEFAULTS: HelixOptions = {
   radius: 172,
   rise: 90,
   drift: true,
+  particles: 'subtle',
+  controls: false,
 };
 
 /** Read a bounded integer from an environment string. */
@@ -77,12 +85,20 @@ export function getHelixOptions(config: RuntimeConfig): HelixOptions {
     ? (rawStyle as HelixStyle)
     : DEFAULTS.style;
 
+  const rawDensity = (config.HELIX_PARTICLES || '').trim().toLowerCase();
+  const particles = (DENSITIES as readonly string[]).includes(rawDensity)
+    ? (rawDensity as ParticleDensity)
+    : DEFAULTS.particles;
+
   return {
     style,
     turns: intInRange(config.HELIX_TURNS, DEFAULTS.turns, 1, 6),
     radius: intInRange(config.HELIX_RADIUS, DEFAULTS.radius, 90, 320),
     rise: intInRange(config.HELIX_RISE, DEFAULTS.rise, 50, 190),
     drift: (config.HELIX_DRIFT || 'true').trim().toLowerCase() !== 'false',
+    particles,
+    controls:
+      (config.HELIX_CONTROLS || 'false').trim().toLowerCase() === 'true',
   };
 }
 

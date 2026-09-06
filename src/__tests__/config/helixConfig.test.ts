@@ -33,6 +33,8 @@ describe('getHelixOptions', () => {
       radius: 172,
       rise: 90,
       drift: true,
+      particles: 'subtle',
+      controls: false,
     });
   });
 
@@ -63,6 +65,31 @@ describe('getHelixOptions', () => {
 
   it('ignores values that are not numbers', () => {
     expect(getHelixOptions(cfg({ HELIX_TURNS: 'two' })).turns).toBe(2);
+  });
+
+  it('reads the particle density, ignoring unknown values', () => {
+    expect(getHelixOptions(cfg({ HELIX_PARTICLES: 'rich' })).particles).toBe(
+      'rich',
+    );
+    expect(getHelixOptions(cfg({ HELIX_PARTICLES: 'OFF' })).particles).toBe(
+      'off',
+    );
+    expect(getHelixOptions(cfg({ HELIX_PARTICLES: 'lots' })).particles).toBe(
+      'subtle',
+    );
+  });
+
+  it('only enables the control panel for an explicit true', () => {
+    expect(getHelixOptions(cfg({ HELIX_CONTROLS: 'true' })).controls).toBe(
+      true,
+    );
+    expect(getHelixOptions(cfg({ HELIX_CONTROLS: 'TRUE' })).controls).toBe(
+      true,
+    );
+    expect(getHelixOptions(cfg({ HELIX_CONTROLS: 'yes' })).controls).toBe(
+      false,
+    );
+    expect(getHelixOptions(cfg({})).controls).toBe(false);
   });
 
   it('only disables drift for an explicit false', () => {

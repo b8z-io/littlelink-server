@@ -255,6 +255,8 @@ environment:
   - HELIX_RADIUS=172     # helix radius in pixels
   - HELIX_RISE=90        # vertical gap between base pairs, in pixels
   - HELIX_DRIFT=true     # turn slowly while the pointer is away
+  - HELIX_PARTICLES=subtle  # off | subtle | rich
+  - HELIX_CONTROLS=false    # true adds a gear button with live scene controls
 ```
 
 The strand is driven by the wheel, a drag, a swipe, or the arrow keys, and it
@@ -269,6 +271,8 @@ straight back into the start of it.
 | `HELIX_RADIUS` | `172` | 90-320. Reduced automatically to fit narrow viewports. |
 | `HELIX_RISE` | `90` | 50-190. Scaled automatically on short viewports. |
 | `HELIX_DRIFT` | `true` | Set `false` to hold the strand still until it is scrolled. Drift is also suppressed while the pointer is over the page and whenever the visitor prefers reduced motion. |
+| `HELIX_PARTICLES` | `subtle` | Orbiting motes, travelling signal pulses along the backbone, and synapse arcs between motes that drift close together. `rich` roughly doubles the population. Motion is suppressed for visitors who prefer reduced motion. |
+| `HELIX_CONTROLS` | `false` | `true` adds a gear button that opens a small panel letting visitors change the render style, particle density, twist, radius, rise and drift. Nothing is persisted, so a reload returns every setting to the configured values. |
 
 Every button stays an ordinary anchor in the document, so links remain
 crawlable, keyboard-navigable and right-click-copyable. Only the backbone and
